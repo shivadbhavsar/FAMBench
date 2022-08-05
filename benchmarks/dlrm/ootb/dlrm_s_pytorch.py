@@ -133,6 +133,13 @@ except (ImportError, OSError):
     torch2trt_import_error_msg = traceback.format_exc()
     torch2trt = None
 
+# MIGraphX
+try:
+    import torch_migraphx
+except (ImportError, OSError):
+    torch2mgx_import_error_msg = traceback.format_exc()
+    torch_migraphx = None
+
 # mixed-dimension trick
 from tricks.md_embedding_bag import PrEmbeddingBag, md_solver
 
@@ -175,16 +182,10 @@ def dlrm_wrap(X, lS_o, lS_i, use_gpu, device, ndevices=1):
             # lS_i can be either a list of tensors or a stacked tensor.
             # Handle each case below:
             if ndevices == 1:
-                lS_i = (
-                    [S_i.to(device) for S_i in lS_i]
-                    if isinstance(lS_i, list)
-                    else lS_i.to(device)
-                )
-                lS_o = (
-                    [S_o.to(device) for S_o in lS_o]
-                    if isinstance(lS_o, list)
-                    else lS_o.to(device)
-                )
+                lS_i = ([S_i.to(device) for S_i in lS_i] if isinstance(
+                    lS_i, list) else lS_i.to(device))
+                lS_o = ([S_o.to(device) for S_o in lS_o] if isinstance(
+                    lS_o, list) else lS_o.to(device))
         return dlrm(X.to(device), lS_o, lS_i)
 
 
@@ -193,7 +194,8 @@ def loss_fn_wrap(Z, T, use_gpu, device):
         if args.loss_function == "mse" or args.loss_function == "bce":
             return dlrm.loss_fn(Z, T.to(device))
         elif args.loss_function == "wbce":
-            loss_ws_ = dlrm.loss_ws[T.data.view(-1).long()].view_as(T).to(device)
+            loss_ws_ = dlrm.loss_ws[T.data.view(-1).long()].view_as(T).to(
+                device)
             loss_fn_ = dlrm.loss_fn(Z, T.to(device))
             loss_sc_ = loss_ws_ * loss_fn_
             return loss_sc_.mean()
@@ -207,14 +209,16 @@ def unpack_batch(b):
 
 
 class LRPolicyScheduler(_LRScheduler):
-    def __init__(self, optimizer, num_warmup_steps, decay_start_step, num_decay_steps):
+    def __init__(self, optimizer, num_warmup_steps, decay_start_step,
+                 num_decay_steps):
         self.num_warmup_steps = num_warmup_steps
         self.decay_start_step = decay_start_step
         self.decay_end_step = decay_start_step + num_decay_steps
         self.num_decay_steps = num_decay_steps
 
         if self.decay_start_step < self.num_warmup_steps:
-            sys.exit("Learning rate warmup must finish before the decay starts")
+            sys.exit(
+                "Learning rate warmup must finish before the decay starts")
 
         super(LRPolicyScheduler, self).__init__(optimizer)
 
@@ -222,13 +226,15 @@ class LRPolicyScheduler(_LRScheduler):
         step_count = self._step_count
         if step_count < self.num_warmup_steps:
             # warmup
-            scale = 1.0 - (self.num_warmup_steps - step_count) / self.num_warmup_steps
+            scale = 1.0 - (self.num_warmup_steps -
+                           step_count) / self.num_warmup_steps
             lr = [base_lr * scale for base_lr in self.base_lrs]
             self.last_lr = lr
         elif self.decay_start_step <= step_count and step_count < self.decay_end_step:
             # decay
             decayed_steps = step_count - self.decay_start_step
-            scale = ((self.num_decay_steps - decayed_steps) / self.num_decay_steps) ** 2
+            scale = ((self.num_decay_steps - decayed_steps) /
+                     self.num_decay_steps)**2
             min_lr = 0.0000001
             lr = [max(min_lr, base_lr * scale) for base_lr in self.base_lrs]
             self.last_lr = lr
@@ -262,13 +268,12 @@ def quantize_fbgemm_gpu_embedding_bag(model, quantize_type, device):
             )  # fall back to FP16 if dimension couldn't be aligned with the required size
         embedding_specs.append(("", E, D, weights_ty, emb_location))
 
-    q_model = (
-        split_table_batched_embeddings_ops.IntNBitTableBatchedEmbeddingBagsCodegen(
-            embedding_specs=embedding_specs,
-            pooling_mode=model.pooling_mode,
-            device=device,
-        )
-    )
+    q_model = (split_table_batched_embeddings_ops.
+               IntNBitTableBatchedEmbeddingBagsCodegen(
+                   embedding_specs=embedding_specs,
+                   pooling_mode=model.pooling_mode,
+                   device=device,
+               ))
     q_model.initialize_weights()
     for t, (_, _, _, weight_ty, _) in enumerate(embedding_specs):
         if weight_ty == SparseType.FP16:
@@ -280,18 +285,11 @@ def quantize_fbgemm_gpu_embedding_bag(model, quantize_type, device):
         elif weight_ty == SparseType.INT8:
             original_weight = model.split_embedding_weights()[t]
             q_weight = torch.ops.fbgemm.FloatToFused8BitRowwiseQuantized(
-                original_weight
-            )
+                original_weight)
             weights = q_weight[:, :-8]
             scale_shift = torch.tensor(
-                q_weight[:, -8:]
-                .contiguous()
-                .cpu()
-                .numpy()
-                .view(np.float32)
-                .astype(np.float16)
-                .view(np.uint8)
-            )
+                q_weight[:, -8:].contiguous().cpu().numpy().view(
+                    np.float32).astype(np.float16).view(np.uint8))
             q_model.split_embedding_weights()[t][0].data.copy_(weights)
             q_model.split_embedding_weights()[t][1].data.copy_(scale_shift)
 
@@ -303,21 +301,20 @@ def quantize_fbgemm_gpu_embedding_bag(model, quantize_type, device):
             )
             weights = q_weight[:, :-4]
             scale_shift = torch.tensor(
-                q_weight[:, -4:].contiguous().cpu().numpy().view(np.uint8)
-            )
+                q_weight[:, -4:].contiguous().cpu().numpy().view(np.uint8))
             q_model.split_embedding_weights()[t][0].data.copy_(weights)
             q_model.split_embedding_weights()[t][1].data.copy_(scale_shift)
     return q_model
 
 
 def create_fbgemm_gpu_emb_bag(
-    device,
-    emb_l,
-    m_spa,
-    quantize_bits,
-    learning_rate,
-    codegen_preference=None,
-    requires_grad=True,
+        device,
+        emb_l,
+        m_spa,
+        quantize_bits,
+        learning_rate,
+        codegen_preference=None,
+        requires_grad=True,
 ):
     if isinstance(emb_l[0], PrEmbeddingBag):
         emb_l = [e.embs for e in emb_l]
@@ -363,8 +360,7 @@ def create_fbgemm_gpu_emb_bag(
                     D,  # num of columns in the table
                     split_table_batched_embeddings_ops.EmbeddingLocation.HOST,
                     split_table_batched_embeddings_ops.ComputeDevice.CPU,
-                )
-                for (E, D) in zip(Es, Ds)
+                ) for (E, D) in zip(Es, Ds)
             ],
             weights_precision=SparseType.FP32,
             optimizer=OptimType.EXACT_SGD,
@@ -381,8 +377,8 @@ def create_fbgemm_gpu_emb_bag(
             # copy quantized values upsampled/recasted to FP32
             for i in range(len(Es)):
                 fbgemm_gpu_emb_bag.split_embedding_weights()[i].data.copy_(
-                    torch.ops.fbgemm.Fused8BitRowwiseQuantizedToFloat(emb_l[i])
-                )
+                    torch.ops.fbgemm.Fused8BitRowwiseQuantizedToFloat(
+                        emb_l[i]))
         elif quantize_type == quantize_type.INT4:
             # copy quantized values upsampled/recasted to FP32
             for i in range(len(Es)):
@@ -390,11 +386,9 @@ def create_fbgemm_gpu_emb_bag(
                     torch.ops.fbgemm.FusedNBitRowwiseQuantizedSBHalfToFloat(
                         emb_l[i],
                         bit_rate=quantize_type.bit_rate(),
-                    )
-                )
+                    ))
         fbgemm_gpu_emb_bag = quantize_fbgemm_gpu_embedding_bag(
-            fbgemm_gpu_emb_bag, quantize_type, device
-        )
+            fbgemm_gpu_emb_bag, quantize_type, device)
     else:
         fbgemm_gpu_emb_bag = SplitTableBatchedEmbeddingBagsCodegen(
             embedding_specs=[
@@ -403,8 +397,7 @@ def create_fbgemm_gpu_emb_bag(
                     D,  # num of columns in the table
                     emb_location,
                     compute_device,
-                )
-                for (E, D) in zip(Es, Ds)
+                ) for (E, D) in zip(Es, Ds)
             ],
             weights_precision=quantize_type,
             optimizer=OptimType.EXACT_SGD,
@@ -429,14 +422,14 @@ def create_fbgemm_gpu_emb_bag(
 # for each respective GPU in parallel.
 class fbgemm_gpu_emb_bag_wrapper(nn.Module):
     def __init__(
-        self,
-        device,
-        emb_l,
-        m_spa,
-        quantize_bits,
-        learning_rate,
-        codegen_preference,
-        requires_grad,
+            self,
+            device,
+            emb_l,
+            m_spa,
+            quantize_bits,
+            learning_rate,
+            codegen_preference,
+            requires_grad,
     ):
         super(fbgemm_gpu_emb_bag_wrapper, self).__init__()
         self.fbgemm_gpu_emb_bag = create_fbgemm_gpu_emb_bag(
@@ -466,18 +459,15 @@ class fbgemm_gpu_emb_bag_wrapper(nn.Module):
             lS_o = torch.stack(lS_o)
         lS_o = lS_o.to(self.device)
         lS_o += torch.from_numpy(indices_lengths_cumsum[:-1, np.newaxis]).to(
-            self.device
-        )
-        numel = torch.tensor([indices_lengths_cumsum[-1]], dtype=torch.long).to(
-            self.device
-        )
+            self.device)
+        numel = torch.tensor([indices_lengths_cumsum[-1]],
+                             dtype=torch.long).to(self.device)
         lS_o = torch.cat((lS_o.flatten(), numel))
 
         # create per_sample_weights
         if v_W_l:
             per_sample_weights = torch.cat(
-                [a.gather(0, b) for a, b in zip(v_W_l, lS_i)]
-            )
+                [a.gather(0, b) for a, b in zip(v_W_l, lS_i)])
         else:
             per_sample_weights = None
 
@@ -486,7 +476,8 @@ class fbgemm_gpu_emb_bag_wrapper(nn.Module):
             lS_i = [lS_i]
         lS_i = torch.cat(lS_i, dim=0).to(self.device)
 
-        if isinstance(self.fbgemm_gpu_emb_bag, IntNBitTableBatchedEmbeddingBagsCodegen):
+        if isinstance(self.fbgemm_gpu_emb_bag,
+                      IntNBitTableBatchedEmbeddingBagsCodegen):
             lS_o = lS_o.int()
             lS_i = lS_i.int()
 
@@ -498,7 +489,8 @@ class fbgemm_gpu_emb_bag_wrapper(nn.Module):
             # handle mixed dimensions case.
             ly = [
                 ly[:, s:e]
-                for (s, e) in zip(self.m_spa_cumsum[:-1], self.m_spa_cumsum[1:])
+                for (s,
+                     e) in zip(self.m_spa_cumsum[:-1], self.m_spa_cumsum[1:])
             ]
         else:
             # handle case in which all tables share the same column dimension.
@@ -599,19 +591,21 @@ class DLRM_Net(nn.Module):
                 _m = m[i] if n > self.md_threshold else base
                 EE = PrEmbeddingBag(n, _m, base)
                 # use np initialization as below for consistency...
-                W = np.random.uniform(
-                    low=-np.sqrt(1 / n), high=np.sqrt(1 / n), size=(n, _m)
-                ).astype(np.float32)
-                EE.embs.weight.data = torch.tensor(W, requires_grad=self.requires_grad)
+                W = np.random.uniform(low=-np.sqrt(1 / n),
+                                      high=np.sqrt(1 / n),
+                                      size=(n, _m)).astype(np.float32)
+                EE.embs.weight.data = torch.tensor(
+                    W, requires_grad=self.requires_grad)
             else:
                 EE = nn.EmbeddingBag(n, m, mode="sum", sparse=True)
                 # initialize embeddings
                 # nn.init.uniform_(EE.weight, a=-np.sqrt(1 / n), b=np.sqrt(1 / n))
-                W = np.random.uniform(
-                    low=-np.sqrt(1 / n), high=np.sqrt(1 / n), size=(n, m)
-                ).astype(np.float32)
+                W = np.random.uniform(low=-np.sqrt(1 / n),
+                                      high=np.sqrt(1 / n),
+                                      size=(n, m)).astype(np.float32)
                 # approach 1
-                EE.weight.data = torch.tensor(W, requires_grad=self.requires_grad)
+                EE.weight.data = torch.tensor(W,
+                                              requires_grad=self.requires_grad)
                 # approach 2
                 # EE.weight.data.copy_(torch.tensor(W))
                 # approach 3
@@ -624,46 +618,43 @@ class DLRM_Net(nn.Module):
         return emb_l, v_W_l
 
     def __init__(
-        self,
-        m_spa=None,
-        ln_emb=None,
-        ln_bot=None,
-        ln_top=None,
-        proj_size=0,
-        arch_interaction_op=None,
-        arch_interaction_itself=False,
-        sigmoid_bot=-1,
-        sigmoid_top=-1,
-        sync_dense_params=True,
-        loss_threshold=0.0,
-        ndevices=-1,
-        qr_flag=False,
-        qr_operation="mult",
-        qr_collisions=0,
-        qr_threshold=200,
-        md_flag=False,
-        md_threshold=200,
-        weighted_pooling=None,
-        loss_function="bce",
-        learning_rate=0.1,
-        use_gpu=False,
-        use_fbgemm_gpu=False,
-        fbgemm_gpu_codegen_pref="Split",
-        inference_only=False,
-        quantize_mlp_with_bit=False,
-        quantize_emb_with_bit=False,
-        use_torch2trt_for_mlp=False,
-        use_tf32=False,
+            self,
+            m_spa=None,
+            ln_emb=None,
+            ln_bot=None,
+            ln_top=None,
+            proj_size=0,
+            arch_interaction_op=None,
+            arch_interaction_itself=False,
+            sigmoid_bot=-1,
+            sigmoid_top=-1,
+            sync_dense_params=True,
+            loss_threshold=0.0,
+            ndevices=-1,
+            qr_flag=False,
+            qr_operation="mult",
+            qr_collisions=0,
+            qr_threshold=200,
+            md_flag=False,
+            md_threshold=200,
+            weighted_pooling=None,
+            loss_function="bce",
+            learning_rate=0.1,
+            use_gpu=False,
+            use_fbgemm_gpu=False,
+            fbgemm_gpu_codegen_pref="Split",
+            inference_only=False,
+            quantize_mlp_with_bit=False,
+            quantize_emb_with_bit=False,
+            use_torch2trt_for_mlp=False,
+            use_torch2mgx_for_mlp=False,
+            use_tf32=False,
     ):
         super(DLRM_Net, self).__init__()
 
-        if (
-            (m_spa is not None)
-            and (ln_emb is not None)
-            and (ln_bot is not None)
-            and (ln_top is not None)
-            and (arch_interaction_op is not None)
-        ):
+        if ((m_spa is not None) and (ln_emb is not None)
+                and (ln_bot is not None) and (ln_top is not None)
+                and (arch_interaction_op is not None)):
             # save arguments
             self.ntables = len(ln_emb)
             self.m_spa = m_spa
@@ -703,17 +694,17 @@ class DLRM_Net(nn.Module):
                 if n_emb < ext_dist.my_size:
                     sys.exit(
                         "only (%d) sparse features for (%d) devices, table partitions will fail"
-                        % (n_emb, ext_dist.my_size)
-                    )
+                        % (n_emb, ext_dist.my_size))
                 self.n_global_emb = n_emb
                 self.n_local_emb, self.n_emb_per_rank = ext_dist.get_split_lengths(
-                    n_emb
-                )
+                    n_emb)
                 self.local_emb_slice = ext_dist.get_my_slice(n_emb)
-                self.local_emb_indices = list(range(n_emb))[self.local_emb_slice]
+                self.local_emb_indices = list(
+                    range(n_emb))[self.local_emb_slice]
 
             # create operators
-            self.emb_l, self.v_W_l = self.create_emb(m_spa, ln_emb, weighted_pooling)
+            self.emb_l, self.v_W_l = self.create_emb(m_spa, ln_emb,
+                                                     weighted_pooling)
             if self.weighted_pooling == "learned":
                 self.v_W_l = nn.ParameterList(list(map(Parameter, self.v_W_l)))
 
@@ -731,7 +722,10 @@ class DLRM_Net(nn.Module):
             # mlp quantization
             self.quantize_mlp_with_bit = quantize_mlp_with_bit
             self.use_torch2trt_for_mlp = use_torch2trt_for_mlp
-            self.quantize_mlp_input_with_half_call = use_gpu and not args.use_torch2trt_for_mlp and args.quantize_mlp_with_bit == 16
+            self.use_torch2mgx_for_mlp = use_torch2mgx_for_mlp
+            self.quantize_mlp_input_with_half_call = use_gpu and not (
+                args.use_torch2trt_for_mlp or args.use_torch2mgx_for_mlp
+            ) and args.quantize_mlp_with_bit == 16
 
             # embedding quantization
             self.quantize_emb = False
@@ -751,13 +745,11 @@ class DLRM_Net(nn.Module):
                 self.loss_fn = torch.nn.BCELoss(reduction="mean")
             elif self.loss_function == "wbce":
                 self.loss_ws = torch.tensor(
-                    np.fromstring(args.loss_weights, dtype=float, sep="-")
-                )
+                    np.fromstring(args.loss_weights, dtype=float, sep="-"))
                 self.loss_fn = torch.nn.BCELoss(reduction="none")
             else:
-                sys.exit(
-                    "ERROR: --loss-function=" + self.loss_function + " is not supported"
-                )
+                sys.exit("ERROR: --loss-function=" + self.loss_function +
+                         " is not supported")
 
     def prepare_parallel_model(self, ndevices):
         device_ids = range(ndevices)
@@ -769,41 +761,36 @@ class DLRM_Net(nn.Module):
         if self.weighted_pooling is not None:
             for k, w in enumerate(self.v_W_l):
                 self.v_W_l[k] = Parameter(
-                    w.to(torch.device("cuda:" + str(k % ndevices)))
-                )
+                    w.to(torch.device("cuda:" + str(k % ndevices))))
         if not self.use_fbgemm_gpu:
             for k, w in enumerate(self.emb_l):
                 self.emb_l[k] = w.to(torch.device("cuda:" + str(k % ndevices)))
         else:
-            self.fbgemm_emb_l, self.v_W_l_l = zip(
-                *[
-                    (
-                        fbgemm_gpu_emb_bag_wrapper(
-                            torch.device("cuda:" + str(k)),
-                            self.emb_l[k::ndevices]
-                            if self.emb_l
-                            else self.emb_l_q[k::ndevices],
-                            self.m_spa[k::ndevices]
-                            if isinstance(self.m_spa, list)
-                            else self.m_spa,
-                            self.quantize_bits,
-                            self.learning_rate,
-                            self.fbgemm_gpu_codegen_pref,
-                            self.requires_grad,
-                        ),
-                        self.v_W_l[k::ndevices] if self.weighted_pooling else None,
-                    )
-                    for k in range(ndevices)
-                ]
-            )
+            self.fbgemm_emb_l, self.v_W_l_l = zip(*[(
+                fbgemm_gpu_emb_bag_wrapper(
+                    torch.device("cuda:" + str(k)),
+                    self.emb_l[k::ndevices] if self.emb_l else self.
+                    emb_l_q[k::ndevices],
+                    self.m_spa[k::ndevices] if isinstance(self.m_spa, list
+                                                          ) else self.m_spa,
+                    self.quantize_bits,
+                    self.learning_rate,
+                    self.fbgemm_gpu_codegen_pref,
+                    self.requires_grad,
+                ),
+                self.v_W_l[k::ndevices] if self.weighted_pooling else None,
+            ) for k in range(ndevices)])
             self.add_new_weights_to_params = True
-        self.interact_features_l = [self.nn_module_wrapper() for _ in range(ndevices)]
+        self.interact_features_l = [
+            self.nn_module_wrapper() for _ in range(ndevices)
+        ]
 
     # nn_module_wrapper is used to call functions concurrently across multi-gpus, using parallel_apply,
     # which requires an nn.Module subclass.
     class nn_module_wrapper(nn.Module):
         def __init__(self):
             super(DLRM_Net.nn_module_wrapper, self).__init__()
+
         def forward(self, E, x, ly):
             return E(x, ly)
 
@@ -829,9 +816,8 @@ class DLRM_Net(nn.Module):
             ndevices = len(self.fbgemm_emb_l)
             lS_o_l = [lS_o[k::ndevices] for k in range(ndevices)]
             lS_i_l = [lS_i[k::ndevices] for k in range(ndevices)]
-            ly = parallel_apply(
-                self.fbgemm_emb_l, list(zip(lS_o_l, lS_i_l, self.v_W_l_l))
-            )
+            ly = parallel_apply(self.fbgemm_emb_l,
+                                list(zip(lS_o_l, lS_i_l, self.v_W_l_l)))
             # Interleave and flatten to match non-fbgemm_gpu ly format.
             ly = [ly[i % ndevices][i // ndevices] for i in range(self.ntables)]
         else:
@@ -847,8 +833,7 @@ class DLRM_Net(nn.Module):
 
                 if self.v_W_l[k] is not None:
                     per_sample_weights = self.v_W_l[k].gather(
-                        0, sparse_index_group_batch
-                    )
+                        0, sparse_index_group_batch)
                 else:
                     per_sample_weights = None
 
@@ -886,12 +871,10 @@ class DLRM_Net(nn.Module):
         for k in range(n):
             if bits == 4:
                 self.emb_l_q[k] = ops.quantized.embedding_bag_4bit_prepack(
-                    self.emb_l[k].weight
-                )
+                    self.emb_l[k].weight)
             elif bits == 8:
                 self.emb_l_q[k] = ops.quantized.embedding_bag_byte_prepack(
-                    self.emb_l[k].weight
-                )
+                    self.emb_l[k].weight)
             elif bits == 16:
                 self.emb_l_q[k] = self.emb_l[k].half().weight
             else:
@@ -921,8 +904,10 @@ class DLRM_Net(nn.Module):
                 # li, lj = torch.tril_indices(ni, nj, offset=offset)
                 # approach 2: custom
                 offset = 1 if self.arch_interaction_itself else 0
-                li = torch.tensor([i for i in range(ni) for j in range(i + offset)])
-                lj = torch.tensor([j for i in range(nj) for j in range(i + offset)])
+                li = torch.tensor(
+                    [i for i in range(ni) for j in range(i + offset)])
+                lj = torch.tensor(
+                    [j for i in range(nj) for j in range(i + offset)])
                 Zflat = Z[:, li, lj]
                 # concatenate dense features and interactions
                 R = torch.cat([x] + [Zflat], dim=1)
@@ -930,11 +915,8 @@ class DLRM_Net(nn.Module):
             # concatenation features (into a row vector)
             R = torch.cat([x] + ly, dim=1)
         else:
-            sys.exit(
-                "ERROR: --arch-interaction-op="
-                + self.arch_interaction_op
-                + " is not supported"
-            )
+            sys.exit("ERROR: --arch-interaction-op=" +
+                     self.arch_interaction_op + " is not supported")
 
         return R
 
@@ -955,13 +937,11 @@ class DLRM_Net(nn.Module):
         if batch_size < ext_dist.my_size:
             sys.exit(
                 "ERROR: batch_size (%d) must be larger than number of ranks (%d)"
-                % (batch_size, ext_dist.my_size)
-            )
+                % (batch_size, ext_dist.my_size))
         if batch_size % ext_dist.my_size != 0:
             sys.exit(
-                "ERROR: batch_size %d can not split across %d ranks evenly"
-                % (batch_size, ext_dist.my_size)
-            )
+                "ERROR: batch_size %d can not split across %d ranks evenly" %
+                (batch_size, ext_dist.my_size))
 
         dense_x = dense_x[ext_dist.get_my_slice(batch_size)]
         lS_o = lS_o[self.local_emb_slice]
@@ -982,7 +962,9 @@ class DLRM_Net(nn.Module):
         # Therefore, matching the distribution of output of bottom mlp, so that both
         # could be used for subsequent interactions on each device.
         if self.ntables != len(ly):
-            sys.exit("ERROR: corrupted intermediate result in distributed_forward call")
+            sys.exit(
+                "ERROR: corrupted intermediate result in distributed_forward call"
+            )
 
         a2a_req = ext_dist.alltoall(ly, self.n_emb_per_rank)
 
@@ -1005,7 +987,9 @@ class DLRM_Net(nn.Module):
 
         # clamp output if needed
         if 0.0 < self.loss_threshold and self.loss_threshold < 1.0:
-            z = torch.clamp(p, min=self.loss_threshold, max=(1.0 - self.loss_threshold))
+            z = torch.clamp(p,
+                            min=self.loss_threshold,
+                            max=(1.0 - self.loss_threshold))
         else:
             z = p
 
@@ -1036,7 +1020,9 @@ class DLRM_Net(nn.Module):
 
         # clamp output if needed
         if 0.0 < self.loss_threshold and self.loss_threshold < 1.0:
-            z = torch.clamp(p, min=self.loss_threshold, max=(1.0 - self.loss_threshold))
+            z = torch.clamp(p,
+                            min=self.loss_threshold,
+                            max=(1.0 - self.loss_threshold))
         else:
             z = p
 
@@ -1065,7 +1051,9 @@ class DLRM_Net(nn.Module):
         dense_x = scatter(dense_x, device_ids, dim=0)
         # distribute sparse features (model parallelism)
         if (self.ntables != len(lS_o)) or (self.ntables != len(lS_i)):
-            sys.exit("ERROR: corrupted model input detected in parallel_forward call")
+            sys.exit(
+                "ERROR: corrupted model input detected in parallel_forward call"
+            )
 
         lS_o = [
             lS_o[k].to(torch.device("cuda:" + str(k % ndevices)))
@@ -1099,9 +1087,13 @@ class DLRM_Net(nn.Module):
         # Therefore, matching the distribution of output of bottom mlp, so that both
         # could be used for subsequent interactions on each device.
         if self.ntables != len(ly):
-            sys.exit("ERROR: corrupted intermediate result in parallel_forward call")
+            sys.exit(
+                "ERROR: corrupted intermediate result in parallel_forward call"
+            )
 
-        t_list = [scatter(ly[k], device_ids, dim=0) for k in range(self.ntables)]
+        t_list = [
+            scatter(ly[k], device_ids, dim=0) for k in range(self.ntables)
+        ]
 
         # adjust the list to be ordered per device
         ly = list(map(lambda y: list(y), zip(*t_list)))
@@ -1109,7 +1101,9 @@ class DLRM_Net(nn.Module):
         # print(ly)
 
         # interactions
-        z = parallel_apply(self.interact_features_l, list(zip(itertools.repeat(self.interact_features),x,ly)))
+        z = parallel_apply(
+            self.interact_features_l,
+            list(zip(itertools.repeat(self.interact_features), x, ly)))
         # debug prints
         # print(z)
 
@@ -1129,9 +1123,9 @@ class DLRM_Net(nn.Module):
 
         # clamp output if needed
         if 0.0 < self.loss_threshold and self.loss_threshold < 1.0:
-            z0 = torch.clamp(
-                p0, min=self.loss_threshold, max=(1.0 - self.loss_threshold)
-            )
+            z0 = torch.clamp(p0,
+                             min=self.loss_threshold,
+                             max=(1.0 - self.loss_threshold))
         else:
             z0 = p0
 
@@ -1140,17 +1134,14 @@ class DLRM_Net(nn.Module):
     def print_weights(self):
         if self.use_fbgemm_gpu and len(self.fbgemm_emb_l):
             ntables_l = [
-                len(e.fbgemm_gpu_emb_bag.embedding_specs) for e in self.fbgemm_emb_l
+                len(e.fbgemm_gpu_emb_bag.embedding_specs)
+                for e in self.fbgemm_emb_l
             ]
             for j in range(ntables_l[0] + 1):
                 for k, e in enumerate(self.fbgemm_emb_l):
                     if j < ntables_l[k]:
-                        print(
-                            e.fbgemm_gpu_emb_bag.split_embedding_weights()[j]
-                            .detach()
-                            .cpu()
-                            .numpy()
-                        )
+                        print(e.fbgemm_gpu_emb_bag.split_embedding_weights()
+                              [j].detach().cpu().numpy())
         elif self.quantize_bits != 32:
             for e in self.emb_l_q:
                 print(e.data.detach().cpu().numpy())
@@ -1173,8 +1164,7 @@ def dash_separated_ints(value):
             int(val)
         except ValueError:
             raise argparse.ArgumentTypeError(
-                "%s is not a valid dash separated list of ints" % value
-            )
+                "%s is not a valid dash separated list of ints" % value)
 
     return value
 
@@ -1186,21 +1176,20 @@ def dash_separated_floats(value):
             float(val)
         except ValueError:
             raise argparse.ArgumentTypeError(
-                "%s is not a valid dash separated list of floats" % value
-            )
+                "%s is not a valid dash separated list of floats" % value)
 
     return value
 
 
 def inference(
-    args,
-    dlrm,
-    best_acc_test,
-    best_auc_test,
-    test_ld,
-    device,
-    use_gpu,
-    log_iter=-1,
+        args,
+        dlrm,
+        best_acc_test,
+        best_auc_test,
+        test_ld,
+        device,
+        use_gpu,
+        log_iter=-1,
 ):
     test_accu = 0
     test_samp = 0
@@ -1209,10 +1198,14 @@ def inference(
         scores = []
         targets = []
 
-    bmlogger = get_bmlogger() # default to Nop logger
+    bmlogger = get_bmlogger()  # default to Nop logger
     if args.fb5logger is not None:
         bmlogger = get_bmlogger(args.fb5logger)
-        bmlogger.header("DLRM", "OOTB", "eval", args.fb5config, score_metric=loggerconstants.EXPS)
+        bmlogger.header("DLRM",
+                        "OOTB",
+                        "eval",
+                        args.fb5config,
+                        score_metric=loggerconstants.EXPS)
 
     for i, testBatch in enumerate(test_ld):
         # early exit if nbatches was set by the user and was exceeded
@@ -1226,12 +1219,12 @@ def inference(
             bmlogger.batch_start()
 
         X_test, lS_o_test, lS_i_test, T_test, W_test, CBPP_test = unpack_batch(
-            testBatch
-        )
+            testBatch)
 
         # Skip the batch if batch size not multiple of total ranks
         if ext_dist.my_size > 1 and X_test.size(0) % ext_dist.my_size != 0:
-            print("Warning: Skiping the batch %d with size %d" % (i, X_test.size(0)))
+            print("Warning: Skiping the batch %d with size %d" %
+                  (i, X_test.size(0)))
             continue
 
         # forward pass
@@ -1264,7 +1257,8 @@ def inference(
                 T_test = T_test.detach().cpu().numpy()  # numpy array
 
                 mbs_test = T_test.shape[0]  # = mini_batch_size except last
-                A_test = np.sum((np.round(S_test, 0) == T_test).astype(np.uint8))
+                A_test = np.sum((np.round(S_test,
+                                          0) == T_test).astype(np.uint8))
 
                 test_accu += A_test
                 test_samp += mbs_test
@@ -1280,20 +1274,22 @@ def inference(
             targets = np.concatenate(targets, axis=0)
 
             metrics = {
-                "recall": lambda y_true, y_score: sklearn.metrics.recall_score(
-                    y_true=y_true, y_pred=np.round(y_score)
-                ),
-                "precision": lambda y_true, y_score: sklearn.metrics.precision_score(
-                    y_true=y_true, y_pred=np.round(y_score)
-                ),
-                "f1": lambda y_true, y_score: sklearn.metrics.f1_score(
-                    y_true=y_true, y_pred=np.round(y_score)
-                ),
-                "ap": sklearn.metrics.average_precision_score,
-                "roc_auc": sklearn.metrics.roc_auc_score,
-                "accuracy": lambda y_true, y_score: sklearn.metrics.accuracy_score(
-                    y_true=y_true, y_pred=np.round(y_score)
-                ),
+                "recall":
+                lambda y_true, y_score: sklearn.metrics.recall_score(
+                    y_true=y_true, y_pred=np.round(y_score)),
+                "precision":
+                lambda y_true, y_score: sklearn.metrics.precision_score(
+                    y_true=y_true, y_pred=np.round(y_score)),
+                "f1":
+                lambda y_true, y_score: sklearn.metrics.f1_score(
+                    y_true=y_true, y_pred=np.round(y_score)),
+                "ap":
+                sklearn.metrics.average_precision_score,
+                "roc_auc":
+                sklearn.metrics.roc_auc_score,
+                "accuracy":
+                lambda y_true, y_score: sklearn.metrics.accuracy_score(
+                    y_true=y_true, y_pred=np.round(y_score)),
             }
 
         validation_results = {}
@@ -1326,16 +1322,12 @@ def inference(
             "recall {:.4f}, precision {:.4f},".format(
                 validation_results["recall"],
                 validation_results["precision"],
-            )
-            + " f1 {:.4f}, ap {:.4f},".format(
-                validation_results["f1"], validation_results["ap"]
-            )
-            + " auc {:.4f}, best auc {:.4f},".format(
-                validation_results["roc_auc"], best_auc_test
-            )
-            + " accuracy {:3.3f} %, best accuracy {:3.3f} %".format(
-                validation_results["accuracy"] * 100, best_acc_test * 100
-            ),
+            ) + " f1 {:.4f}, ap {:.4f},".format(validation_results["f1"],
+                                                validation_results["ap"]) +
+            " auc {:.4f}, best auc {:.4f},".format(
+                validation_results["roc_auc"], best_auc_test) +
+            " accuracy {:3.3f} %, best accuracy {:3.3f} %".format(
+                validation_results["accuracy"] * 100, best_acc_test * 100),
             flush=True,
         )
     else:
@@ -1344,8 +1336,7 @@ def inference(
             best_acc_test = acc_test
         print(
             " accuracy {:3.3f} %, best {:3.3f} %".format(
-                acc_test * 100, best_acc_test * 100
-            ),
+                acc_test * 100, best_acc_test * 100),
             flush=True,
         )
     return model_metrics_dict, is_best
@@ -1354,24 +1345,31 @@ def inference(
 def run():
     ### parse arguments ###
     parser = argparse.ArgumentParser(
-        description="Train Deep Learning Recommendation Model (DLRM)"
-    )
+        description="Train Deep Learning Recommendation Model (DLRM)")
     # model related parameters
     parser.add_argument("--arch-sparse-feature-size", type=int, default=2)
-    parser.add_argument(
-        "--arch-embedding-size", type=dash_separated_ints, default="4-3-2"
-    )
+    parser.add_argument("--arch-embedding-size",
+                        type=dash_separated_ints,
+                        default="4-3-2")
     parser.add_argument("--arch-project-size", type=int, default=0)
     # j will be replaced with the table number
-    parser.add_argument("--arch-mlp-bot", type=dash_separated_ints, default="4-3-2")
-    parser.add_argument("--arch-mlp-top", type=dash_separated_ints, default="4-2-1")
-    parser.add_argument(
-        "--arch-interaction-op", type=str, choices=["dot", "cat"], default="dot"
-    )
-    parser.add_argument("--arch-interaction-itself", action="store_true", default=False)
-    parser.add_argument(
-        "--weighted-pooling", type=str, choices=["fixed", "learned", None], default=None
-    )
+    parser.add_argument("--arch-mlp-bot",
+                        type=dash_separated_ints,
+                        default="4-3-2")
+    parser.add_argument("--arch-mlp-top",
+                        type=dash_separated_ints,
+                        default="4-2-1")
+    parser.add_argument("--arch-interaction-op",
+                        type=str,
+                        choices=["dot", "cat"],
+                        default="dot")
+    parser.add_argument("--arch-interaction-itself",
+                        action="store_true",
+                        default=False)
+    parser.add_argument("--weighted-pooling",
+                        type=str,
+                        choices=["fixed", "learned", None],
+                        default=None)
 
     # embedding table options
     parser.add_argument("--md-flag", action="store_true", default=False)
@@ -1384,35 +1382,43 @@ def run():
     parser.add_argument("--qr-collisions", type=int, default=4)
     # activations and loss
     parser.add_argument("--activation-function", type=str, default="relu")
-    parser.add_argument("--loss-function", type=str, default="mse")  # or bce or wbce
-    parser.add_argument(
-        "--loss-weights", type=dash_separated_floats, default="1.0-1.0"
-    )  # for wbce
+    parser.add_argument("--loss-function", type=str,
+                        default="mse")  # or bce or wbce
+    parser.add_argument("--loss-weights",
+                        type=dash_separated_floats,
+                        default="1.0-1.0")  # for wbce
     parser.add_argument("--loss-threshold", type=float, default=0.0)  # 1.0e-7
     parser.add_argument("--round-targets", type=bool, default=False)
     # data
     parser.add_argument("--data-size", type=int, default=1)
     parser.add_argument("--num-batches", type=int, default=0)
-    parser.add_argument(
-        "--data-generation", type=str, default="random"
-    )  # synthetic or dataset
-    parser.add_argument(
-        "--rand-data-dist", type=str, default="uniform"
-    )  # uniform or gaussian
+    parser.add_argument("--data-generation", type=str,
+                        default="random")  # synthetic or dataset
+    parser.add_argument("--rand-data-dist", type=str,
+                        default="uniform")  # uniform or gaussian
     parser.add_argument("--rand-data-min", type=float, default=0)
     parser.add_argument("--rand-data-max", type=float, default=1)
     parser.add_argument("--rand-data-mu", type=float, default=-1)
     parser.add_argument("--rand-data-sigma", type=float, default=1)
-    parser.add_argument("--data-trace-file", type=str, default="./input/dist_emb_j.log")
-    parser.add_argument("--data-set", type=str, default="kaggle")  # or terabyte
+    parser.add_argument("--data-trace-file",
+                        type=str,
+                        default="./input/dist_emb_j.log")
+    parser.add_argument("--data-set", type=str,
+                        default="kaggle")  # or terabyte
     parser.add_argument("--raw-data-file", type=str, default="")
     parser.add_argument("--processed-data-file", type=str, default="")
-    parser.add_argument("--data-randomize", type=str, default="total")  # or day or none
-    parser.add_argument("--data-trace-enable-padding", type=bool, default=False)
+    parser.add_argument("--data-randomize", type=str,
+                        default="total")  # or day or none
+    parser.add_argument("--data-trace-enable-padding",
+                        type=bool,
+                        default=False)
     parser.add_argument("--max-ind-range", type=int, default=-1)
-    parser.add_argument("--data-sub-sample-rate", type=float, default=0.0)  # in [0, 1]
+    parser.add_argument("--data-sub-sample-rate", type=float,
+                        default=0.0)  # in [0, 1]
     parser.add_argument("--num-indices-per-lookup", type=int, default=10)
-    parser.add_argument("--num-indices-per-lookup-fixed", type=bool, default=False)
+    parser.add_argument("--num-indices-per-lookup-fixed",
+                        type=bool,
+                        default=False)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--memory-map", action="store_true", default=False)
     # training
@@ -1449,7 +1455,13 @@ def run():
         default="Split",
     )
     # torch2trt
-    parser.add_argument("--use-torch2trt-for-mlp", action="store_true", default=False)
+    parser.add_argument("--use-torch2trt-for-mlp",
+                        action="store_true",
+                        default=False)
+    # torch2migraphx
+    parser.add_argument("--use-torch2mgx-for-mlp",
+                        action="store_true",
+                        default=False)
     #tf32
     parser.add_argument("--use-tf32", action="store_true", default=False)
     # distributed
@@ -1461,12 +1473,22 @@ def run():
     parser.add_argument("--test-mini-batch-size", type=int, default=-1)
     parser.add_argument("--test-num-workers", type=int, default=-1)
     parser.add_argument("--print-time", action="store_true", default=False)
-    parser.add_argument("--print-wall-time", action="store_true", default=False)
-    parser.add_argument("--print-accumulated-time", action="store_true", default=False)
+    parser.add_argument("--print-wall-time",
+                        action="store_true",
+                        default=False)
+    parser.add_argument("--print-accumulated-time",
+                        action="store_true",
+                        default=False)
     parser.add_argument("--debug-mode", action="store_true", default=False)
-    parser.add_argument("--enable-profiling", action="store_true", default=False)
-    parser.add_argument("--plot-compute-graph", action="store_true", default=False)
-    parser.add_argument("--tensor-board-filename", type=str, default="run_kaggle_pt")
+    parser.add_argument("--enable-profiling",
+                        action="store_true",
+                        default=False)
+    parser.add_argument("--plot-compute-graph",
+                        action="store_true",
+                        default=False)
+    parser.add_argument("--tensor-board-filename",
+                        type=str,
+                        default="run_kaggle_pt")
     # store/load model
     parser.add_argument("--save-model", type=str, default="")
     parser.add_argument("--load-model", type=str, default="")
@@ -1476,8 +1498,12 @@ def run():
     parser.add_argument("--mlperf-acc-threshold", type=float, default=0.0)
     # stop at target AUC Terabyte (no subsampling) 0.8025
     parser.add_argument("--mlperf-auc-threshold", type=float, default=0.0)
-    parser.add_argument("--mlperf-bin-loader", action="store_true", default=False)
-    parser.add_argument("--mlperf-bin-shuffle", action="store_true", default=False)
+    parser.add_argument("--mlperf-bin-loader",
+                        action="store_true",
+                        default=False)
+    parser.add_argument("--mlperf-bin-shuffle",
+                        action="store_true",
+                        default=False)
     # mlperf gradient accumulation iterations
     parser.add_argument("--mlperf-grad-accum-iter", type=int, default=1)
     # LR policy
@@ -1485,7 +1511,11 @@ def run():
     parser.add_argument("--lr-decay-start-step", type=int, default=0)
     parser.add_argument("--lr-num-decay-steps", type=int, default=0)
 
-    parser.add_argument("--precache-ml-data", type=int, nargs='?', default=None, const=sys.maxsize)
+    parser.add_argument("--precache-ml-data",
+                        type=int,
+                        nargs='?',
+                        default=None,
+                        const=sys.maxsize)
     parser.add_argument("--warmup-steps", type=int, default=0)
     # FB5 Logging
     parser.add_argument("--fb5logger", type=str, default=None)
@@ -1499,22 +1529,25 @@ def run():
 
     if args.dataset_multiprocessing:
         assert float(sys.version[:3]) > 3.7, (
-            "The dataset_multiprocessing "
-            + "flag is susceptible to a bug in Python 3.7 and under. "
-            + "https://github.com/facebookresearch/dlrm/issues/172"
-        )
+            "The dataset_multiprocessing " +
+            "flag is susceptible to a bug in Python 3.7 and under. " +
+            "https://github.com/facebookresearch/dlrm/issues/172")
 
     if args.mlperf_logging:
-        mlperf_logger.log_event(key=mlperf_logger.constants.CACHE_CLEAR, value=True)
-        mlperf_logger.log_start(
-            key=mlperf_logger.constants.INIT_START, log_all_ranks=True
-        )
+        mlperf_logger.log_event(key=mlperf_logger.constants.CACHE_CLEAR,
+                                value=True)
+        mlperf_logger.log_start(key=mlperf_logger.constants.INIT_START,
+                                log_all_ranks=True)
 
     if args.weighted_pooling is not None:
         if args.qr_flag:
-            sys.exit("ERROR: quotient remainder with weighted pooling is not supported")
+            sys.exit(
+                "ERROR: quotient remainder with weighted pooling is not supported"
+            )
         if args.md_flag:
-            sys.exit("ERROR: mixed dimensions with weighted pooling is not supported")
+            sys.exit(
+                "ERROR: mixed dimensions with weighted pooling is not supported"
+            )
     if args.quantize_emb_with_bit in [4, 8]:
         if args.qr_flag:
             sys.exit(
@@ -1524,9 +1557,8 @@ def run():
             sys.exit(
                 "ERROR: 4 and 8-bit quantization with mixed dimensions is not supported"
             )
-    if args.quantize_emb_with_bit in [4, 8, 16] and (
-        not fbgemm_gpu or not args.use_fbgemm_gpu
-    ):
+    if args.quantize_emb_with_bit in [4, 8, 16] and (not fbgemm_gpu or
+                                                     not args.use_fbgemm_gpu):
         extra_info = ""
         if not fbgemm_gpu:
             extra_info += "\nfbgemm_gpu module failed to import.\n\n" + fbgemm_gpu_import_error_msg
@@ -1535,29 +1567,30 @@ def run():
 
         if not args.inference_only:
             sys.exit(
-                "ERROR: Training quantized embeddings requires fbgemm_gpu. "
-                + extra_info
-            )
+                "ERROR: Training quantized embeddings requires fbgemm_gpu. " +
+                extra_info)
         elif args.use_gpu:
             sys.exit(
-                "ERROR: Quantized embeddings on GPU requires fbgemm_gpu. " + extra_info
-            )
+                "ERROR: Quantized embeddings on GPU requires fbgemm_gpu. " +
+                extra_info)
         elif args.quantize_emb_with_bit == 16:
             sys.exit(
-                "ERROR: 16-bit quantized embeddings requires fbgemm_gpu. " + extra_info
-            )
+                "ERROR: 16-bit quantized embeddings requires fbgemm_gpu. " +
+                extra_info)
 
     assert args.quantize_emb_with_bit in [
         4,
         8,
         16,
         32,
-    ], "only support 4/8/16/32-bit but got {}".format(args.quantize_emb_with_bit)
+    ], "only support 4/8/16/32-bit but got {}".format(
+        args.quantize_emb_with_bit)
 
     if args.use_gpu:
         assert torch.cuda.is_available(), "No cuda device is available."
     if args.use_fbgemm_gpu:
-        assert fbgemm_gpu, ("\nfbgemm_gpu module failed to import.\n\n" + fbgemm_gpu_import_error_msg)
+        assert fbgemm_gpu, ("\nfbgemm_gpu module failed to import.\n\n" +
+                            fbgemm_gpu_import_error_msg)
     use_gpu = args.use_gpu
     use_fbgemm_gpu = args.use_fbgemm_gpu
 
@@ -1575,9 +1608,9 @@ def run():
         args.test_num_workers = args.num_workers
 
     if not args.debug_mode:
-        ext_dist.init_distributed(
-            local_rank=args.local_rank, use_gpu=use_gpu, backend=args.dist_backend
-        )
+        ext_dist.init_distributed(local_rank=args.local_rank,
+                                  use_gpu=use_gpu,
+                                  backend=args.dist_backend)
 
     if use_gpu:
         torch.cuda.manual_seed_all(args.numpy_rand_seed)
@@ -1605,7 +1638,8 @@ def run():
         mlperf_logger.barrier()
 
     if args.data_generation == "dataset":
-        train_data, train_ld, test_data, test_ld = dp.make_criteo_data_and_loaders(args)
+        train_data, train_ld, test_data, test_ld = dp.make_criteo_data_and_loaders(
+            args)
         table_feature_map = {idx: idx for idx in range(len(train_data.counts))}
         nbatches = args.num_batches if args.num_batches > 0 else len(train_ld)
         nbatches_test = len(test_ld)
@@ -1616,11 +1650,10 @@ def run():
             ln_emb = np.array(
                 list(
                     map(
-                        lambda x: x if x < args.max_ind_range else args.max_ind_range,
+                        lambda x: x
+                        if x < args.max_ind_range else args.max_ind_range,
                         ln_emb,
-                    )
-                )
-            )
+                    )))
         else:
             ln_emb = np.array(ln_emb)
         m_den = train_data.m_den
@@ -1630,13 +1663,14 @@ def run():
         ln_emb = np.fromstring(args.arch_embedding_size, dtype=int, sep="-")
         m_den = ln_bot[0]
         train_data, train_ld, test_data, test_ld = dp.make_random_data_and_loader(
-            args, ln_emb, m_den, cache_size=args.precache_ml_data
-        )
+            args, ln_emb, m_den, cache_size=args.precache_ml_data)
         nbatches = args.num_batches if args.num_batches > 0 else len(train_ld)
         nbatches_test = len(test_ld)
 
     nbatches_in_use = nbatches_test if args.inference_only else nbatches
-    assert nbatches_in_use > args.warmup_steps, (f"Change --warmup-steps={args.warmup_steps} to be lower than {nbatches_in_use}.")
+    assert nbatches_in_use > args.warmup_steps, (
+        f"Change --warmup-steps={args.warmup_steps} to be lower than {nbatches_in_use}."
+    )
 
     args.ln_emb = ln_emb.tolist()
     if args.mlperf_logging:
@@ -1650,8 +1684,8 @@ def run():
     if args.use_fbgemm_gpu:
         assert m_spa % 4 == 0, (
             f"{m_spa} % 4 is not 0, but fbgemm_gpu requires the embedding dim "
-            + "(--arch-sparse-feature-size number) to be evenly divisible by 4."
-        )
+            +
+            "(--arch-sparse-feature-size number) to be evenly divisible by 4.")
 
     m_den_out = ln_bot[ln_bot.size - 1]
     if args.arch_interaction_op == "dot":
@@ -1668,53 +1702,35 @@ def run():
     elif args.arch_interaction_op == "cat":
         num_int = num_fea * m_den_out
     else:
-        sys.exit(
-            "ERROR: --arch-interaction-op="
-            + args.arch_interaction_op
-            + " is not supported"
-        )
+        sys.exit("ERROR: --arch-interaction-op=" + args.arch_interaction_op +
+                 " is not supported")
     arch_mlp_top_adjusted = str(num_int) + "-" + args.arch_mlp_top
     ln_top = np.fromstring(arch_mlp_top_adjusted, dtype=int, sep="-")
 
     # sanity check: feature sizes and mlp dimensions must match
     if m_den != ln_bot[0]:
-        sys.exit(
-            "ERROR: arch-dense-feature-size "
-            + str(m_den)
-            + " does not match first dim of bottom mlp "
-            + str(ln_bot[0])
-        )
+        sys.exit("ERROR: arch-dense-feature-size " + str(m_den) +
+                 " does not match first dim of bottom mlp " + str(ln_bot[0]))
     if args.qr_flag:
         if args.qr_operation == "concat" and 2 * m_spa != m_den_out:
             sys.exit(
-                "ERROR: 2 arch-sparse-feature-size "
-                + str(2 * m_spa)
-                + " does not match last dim of bottom mlp "
-                + str(m_den_out)
-                + " (note that the last dim of bottom mlp must be 2x the embedding dim)"
+                "ERROR: 2 arch-sparse-feature-size " + str(2 * m_spa) +
+                " does not match last dim of bottom mlp " + str(m_den_out) +
+                " (note that the last dim of bottom mlp must be 2x the embedding dim)"
             )
         if args.qr_operation != "concat" and m_spa != m_den_out:
-            sys.exit(
-                "ERROR: arch-sparse-feature-size "
-                + str(m_spa)
-                + " does not match last dim of bottom mlp "
-                + str(m_den_out)
-            )
+            sys.exit("ERROR: arch-sparse-feature-size " + str(m_spa) +
+                     " does not match last dim of bottom mlp " +
+                     str(m_den_out))
     else:
         if m_spa != m_den_out:
-            sys.exit(
-                "ERROR: arch-sparse-feature-size "
-                + str(m_spa)
-                + " does not match last dim of bottom mlp "
-                + str(m_den_out)
-            )
+            sys.exit("ERROR: arch-sparse-feature-size " + str(m_spa) +
+                     " does not match last dim of bottom mlp " +
+                     str(m_den_out))
     if num_int != ln_top[0]:
-        sys.exit(
-            "ERROR: # of feature interactions "
-            + str(num_int)
-            + " does not match first dimension of top mlp "
-            + str(ln_top[0])
-        )
+        sys.exit("ERROR: # of feature interactions " + str(num_int) +
+                 " does not match first dimension of top mlp " +
+                 str(ln_top[0]))
 
     # assign mixed dimensions if applicable
     if args.md_flag:
@@ -1727,27 +1743,20 @@ def run():
         if use_fbgemm_gpu:
             for m in m_spa:
                 assert m % 4 == 0, (
-                    "Found an incompatible embedding dim in m_spa. "
-                    + f"{m} % 4 is not 0, but fbgemm_gpu requires the "
-                    + "embedding dim to be evenly divisible by 4."
-                )
+                    "Found an incompatible embedding dim in m_spa. " +
+                    f"{m} % 4 is not 0, but fbgemm_gpu requires the " +
+                    "embedding dim to be evenly divisible by 4.")
 
     # test prints (model arch)
     if args.debug_mode:
         print("model arch:")
-        print(
-            "mlp top arch "
-            + str(ln_top.size - 1)
-            + " layers, with input to output dimensions:"
-        )
+        print("mlp top arch " + str(ln_top.size - 1) +
+              " layers, with input to output dimensions:")
         print(ln_top)
         print("# of interactions")
         print(num_int)
-        print(
-            "mlp bot arch "
-            + str(ln_bot.size - 1)
-            + " layers, with input to output dimensions:"
-        )
+        print("mlp bot arch " + str(ln_bot.size - 1) +
+              " layers, with input to output dimensions:")
         print(ln_bot)
         print("# of features (sparse and dense)")
         print(num_fea)
@@ -1755,13 +1764,8 @@ def run():
         print(m_den)
         print("sparse feature size")
         print(m_spa)
-        print(
-            "# of embeddings (= # of sparse features) "
-            + str(ln_emb.size)
-            + ", with dimensions "
-            + str(m_spa)
-            + "x:"
-        )
+        print("# of embeddings (= # of sparse features) " + str(ln_emb.size) +
+              ", with dimensions " + str(m_spa) + "x:")
         print(ln_emb)
 
         print("data (inputs and targets):")
@@ -1776,15 +1780,11 @@ def run():
             print(X.detach().cpu())
             # transform offsets to lengths when printing
             print(
-                torch.IntTensor(
-                    [
-                        np.diff(
-                            S_o.detach().cpu().tolist() + list(lS_i[i].shape)
-                        ).tolist()
-                        for i, S_o in enumerate(lS_o)
-                    ]
-                )
-            )
+                torch.IntTensor([
+                    np.diff(S_o.detach().cpu().tolist() +
+                            list(lS_i[i].shape)).tolist()
+                    for i, S_o in enumerate(lS_o)
+                ]))
             print([S_i.detach().cpu() for S_i in lS_i])
             print(T.detach().cpu())
 
@@ -1825,6 +1825,7 @@ def run():
         quantize_mlp_with_bit=args.quantize_mlp_with_bit,
         quantize_emb_with_bit=args.quantize_emb_with_bit,
         use_torch2trt_for_mlp=args.use_torch2trt_for_mlp,
+        use_torch2mgx_for_mlp=args.use_torch2mgx_for_mlp,
         use_tf32=args.use_tf32,
     )
 
@@ -1842,9 +1843,8 @@ def run():
 
     if not args.inference_only:
         assert args.quantize_mlp_with_bit == 32, (
-            "Dynamic quantization for mlp requires "
-            + "--inference-only because training is not supported"
-        )
+            "Dynamic quantization for mlp requires " +
+            "--inference-only because training is not supported")
     else:
         # Currently only INT8 and FP16 quantized types are supported for quantized MLP inference.
         # By default we don't do the quantization: quantize_{mlp,emb}_with_bit == 32 (FP32)
@@ -1852,32 +1852,35 @@ def run():
             8,
             16,
             32,
-        ], "only support 8/16/32-bit but got {}".format(args.quantize_mlp_with_bit)
+        ], "only support 8/16/32-bit but got {}".format(
+            args.quantize_mlp_with_bit)
 
-        if not args.use_torch2trt_for_mlp:
+        if not (args.use_torch2trt_for_mlp or args.use_torch2mgx_for_mlp):
             if args.quantize_mlp_with_bit == 16 and use_gpu:
                 dlrm.top_l = dlrm.top_l.half()
                 dlrm.bot_l = dlrm.bot_l.half()
             elif args.quantize_mlp_with_bit in [8, 16]:
                 assert not use_gpu, (
                     "Cannot run PyTorch's built-in dynamic quantization for mlp "
-                    + "with --use-gpu enabled, because DynamicQuantizedLinear's "
-                    + "forward function calls 'quantized::linear_dynamic', which does not "
-                    + "support the 'CUDA' backend. To convert to and run quantized mlp layers "
-                    + "on the gpu, install torch2trt and enable --use-torch2trt-for-mlp. "
-                    + "Alternatively, disable --use-gpu to use PyTorch's built-in "
-                    + "cpu quantization ops for the mlp layers. "
-                )
+                    +
+                    "with --use-gpu enabled, because DynamicQuantizedLinear's "
+                    +
+                    "forward function calls 'quantized::linear_dynamic', which does not "
+                    +
+                    "support the 'CUDA' backend. To convert to and run quantized mlp layers "
+                    +
+                    "on the gpu, install torch2trt and enable --use-torch2trt-for-mlp. "
+                    +
+                    "Alternatively, disable --use-gpu to use PyTorch's built-in "
+                    + "cpu quantization ops for the mlp layers. ")
                 if args.quantize_mlp_with_bit == 8:
                     quantize_dtype = torch.qint8
                 else:
                     quantize_dtype = torch.float16
                 dlrm.top_l = torch.quantization.quantize_dynamic(
-                    dlrm.top_l, {torch.nn.Linear}, quantize_dtype
-                )
+                    dlrm.top_l, {torch.nn.Linear}, quantize_dtype)
                 dlrm.bot_l = torch.quantization.quantize_dynamic(
-                    dlrm.bot_l, {torch.nn.Linear}, quantize_dtype
-                )
+                    dlrm.bot_l, {torch.nn.Linear}, quantize_dtype)
 
     # Prep work for embedding tables and model transfer:
     # Handling single-cpu and single-gpu modes
@@ -1889,19 +1892,17 @@ def run():
     # training or distributed inference if --inference-only is enabled.
     if dlrm.ndevices_available <= 1:
         if use_fbgemm_gpu:
-            dlrm.fbgemm_emb_l = nn.ModuleList(
-                [
-                    fbgemm_gpu_emb_bag_wrapper(
-                        device,
-                        dlrm.emb_l if dlrm.emb_l else dlrm.emb_l_q,
-                        dlrm.m_spa,
-                        dlrm.quantize_bits,
-                        dlrm.learning_rate,
-                        dlrm.fbgemm_gpu_codegen_pref,
-                        dlrm.requires_grad,
-                    )
-                ]
-            )
+            dlrm.fbgemm_emb_l = nn.ModuleList([
+                fbgemm_gpu_emb_bag_wrapper(
+                    device,
+                    dlrm.emb_l if dlrm.emb_l else dlrm.emb_l_q,
+                    dlrm.m_spa,
+                    dlrm.quantize_bits,
+                    dlrm.learning_rate,
+                    dlrm.fbgemm_gpu_codegen_pref,
+                    dlrm.requires_grad,
+                )
+            ])
         if use_gpu:
             dlrm = dlrm.to(device)
             if dlrm.weighted_pooling == "fixed":
@@ -1915,21 +1916,57 @@ def run():
 
     if args.use_torch2trt_for_mlp:
         if torch2trt and use_gpu and args.inference_only:
-            bot_l_sample_input = torch.ones([args.mini_batch_size, ln_bot[0]], dtype=torch.float32).cuda()
-            top_l_sample_input = torch.ones([args.mini_batch_size, ln_top[0]], dtype=torch.float32).cuda()
+            bot_l_sample_input = torch.ones([args.mini_batch_size, ln_bot[0]],
+                                            dtype=torch.float32).cuda()
+            top_l_sample_input = torch.ones([args.mini_batch_size, ln_top[0]],
+                                            dtype=torch.float32).cuda()
             additional_args = {}
-            additional_args['max_batch_size']=args.mini_batch_size
-            additional_args['max_workspace_size']=1 << 20
+            additional_args['max_batch_size'] = args.mini_batch_size
+            additional_args['max_workspace_size'] = 1 << 20
             if args.quantize_mlp_with_bit == 16:
-                additional_args['fp16_mode']=True
+                additional_args['fp16_mode'] = True
             elif args.quantize_mlp_with_bit == 8:
-                additional_args['int8_mode']=True
-            dlrm.bot_l = torch2trt(dlrm.bot_l, (bot_l_sample_input,), **additional_args)
-            dlrm.top_l = torch2trt(dlrm.top_l, (top_l_sample_input,), **additional_args)
+                additional_args['int8_mode'] = True
+            dlrm.bot_l = torch2trt(dlrm.bot_l, (bot_l_sample_input, ),
+                                   **additional_args)
+            dlrm.top_l = torch2trt(dlrm.top_l, (top_l_sample_input, ),
+                                   **additional_args)
         elif torch2trt is None:
-            sys.exit("\ntorch2trt module failed to import.\n\n" + torch2trt_import_error_msg)
+            sys.exit("\ntorch2trt module failed to import.\n\n" +
+                     torch2trt_import_error_msg)
         else:
             error_msg = "ERROR: When --use-torch2trt-for-mlp is enabled, "
+            if not use_gpu:
+                error_msg += "--use-gpu must be enabled, "
+            if not args.inference_only:
+                error_msg += "--inference-only must be enabled, "
+            error_msg = error_msg[:-2] + "."
+            sys.exit(error_msg)
+
+    if args.use_torch2mgx_for_mlp:
+        if torch_migraphx and use_gpu and args.inference_only:
+            bot_l_sample_input = torch.ones([args.mini_batch_size, ln_bot[0]],
+                                            dtype=torch.float32).cuda()
+            top_l_sample_input = torch.ones([args.mini_batch_size, ln_top[0]],
+                                            dtype=torch.float32).cuda()
+            additional_args = {}
+            if args.quantize_mlp_with_bit == 16:
+                additional_args['fp16_mode'] = True
+
+            dlrm.bot_l = torch_migraphx.fx.lower_to_mgx(dlrm.bot_l,
+                                                        [bot_l_sample_input],
+                                                        allow_split=False,
+                                                        **additional_args)
+            dlrm.top_l = torch_migraphx.fx.lower_to_mgx(dlrm.top_l,
+                                                        [top_l_sample_input],
+                                                        allow_split=False,
+                                                        **additional_args)
+
+        elif torch_migraphx is None:
+            sys.exit("\ntorch2mgx module failed to import.\n\n" +
+                     torch2mgx_import_error_msg)
+        else:
+            error_msg = "ERROR: When --use-torch2mgx-for-mlp is enabled, "
             if not use_gpu:
                 error_msg += "--use-gpu must be enabled, "
             if not args.inference_only:
@@ -1950,30 +1987,26 @@ def run():
     if not args.inference_only:
         # specify the optimizer algorithm
         opts = {
-            "sgd": torch.optim.SGD,
-            "rwsadagrad": RowWiseSparseAdagrad.RWSAdagrad,
-            "adagrad": apex.optimizers.FusedAdagrad
-            if apex
-            else torch.optim.Adagrad,
+            "sgd":
+            torch.optim.SGD,
+            "rwsadagrad":
+            RowWiseSparseAdagrad.RWSAdagrad,
+            "adagrad":
+            apex.optimizers.FusedAdagrad if apex else torch.optim.Adagrad,
         }
 
         parameters = (
-            dlrm.parameters()
-            if ext_dist.my_size == 1
-            else [
+            dlrm.parameters() if ext_dist.my_size == 1 else [
                 {
                     "params": [
-                        p
-                        for emb in (
-                            [e.fbgemm_gpu_emb_bag for e in dlrm.fbgemm_emb_l]
-                            if use_fbgemm_gpu
-                            else dlrm.emb_l_q
-                            if dlrm.quantize_bits != 32
-                            else dlrm.emb_l
-                        )
-                        for p in emb.parameters()
+                        p for emb in (
+                            [e.fbgemm_gpu_emb_bag
+                             for e in dlrm.fbgemm_emb_l] if use_fbgemm_gpu else
+                            dlrm.emb_l_q if dlrm.quantize_bits != 32 else dlrm.
+                            emb_l) for p in emb.parameters()
                     ],
-                    "lr": args.learning_rate,
+                    "lr":
+                    args.learning_rate,
                 },
                 # TODO check this lr setup
                 # bottom mlp has no data parallelism
@@ -1986,8 +2019,7 @@ def run():
                     "params": dlrm.top_l.parameters(),
                     "lr": args.learning_rate,
                 },
-            ]
-        )
+            ])
         optimizer = opts[args.optimizer](parameters, lr=args.learning_rate)
         lr_scheduler = LRPolicyScheduler(
             optimizer,
@@ -2014,12 +2046,10 @@ def run():
 
     if args.mlperf_logging:
         mlperf_logger.mlperf_submission_log("dlrm")
-        mlperf_logger.log_event(
-            key=mlperf_logger.constants.SEED, value=args.numpy_rand_seed
-        )
-        mlperf_logger.log_event(
-            key=mlperf_logger.constants.GLOBAL_BATCH_SIZE, value=args.mini_batch_size
-        )
+        mlperf_logger.log_event(key=mlperf_logger.constants.SEED,
+                                value=args.numpy_rand_seed)
+        mlperf_logger.log_event(key=mlperf_logger.constants.GLOBAL_BATCH_SIZE,
+                                value=args.mini_batch_size)
 
     # Load model is specified
     if not (args.load_model == ""):
@@ -2040,7 +2070,8 @@ def run():
                 )
         else:
             # when targeting inference on CPU
-            ld_model = torch.load(args.load_model, map_location=torch.device("cpu"))
+            ld_model = torch.load(args.load_model,
+                                  map_location=torch.device("cpu"))
         dlrm.load_state_dict(ld_model["state_dict"])
         ld_j = ld_model["iter"]
         ld_k = ld_model["epoch"]
@@ -2062,48 +2093,36 @@ def run():
             args.print_freq = ld_nbatches
             args.test_freq = 0
 
-        print(
-            "Saved at: epoch = {:d}/{:d}, batch = {:d}/{:d}, ntbatch = {:d}".format(
-                ld_k, ld_nepochs, ld_j, ld_nbatches, ld_nbatches_test
-            )
-        )
-        print(
-            "Training state: loss = {:.6f}".format(
-                ld_train_loss,
-            )
-        )
+        print("Saved at: epoch = {:d}/{:d}, batch = {:d}/{:d}, ntbatch = {:d}".
+              format(ld_k, ld_nepochs, ld_j, ld_nbatches, ld_nbatches_test))
+        print("Training state: loss = {:.6f}".format(ld_train_loss, ))
         if args.mlperf_logging:
-            print(
-                "Testing state: accuracy = {:3.3f} %, auc = {:.3f}".format(
-                    ld_acc_test * 100, ld_gAUC_test
-                )
-            )
+            print("Testing state: accuracy = {:3.3f} %, auc = {:.3f}".format(
+                ld_acc_test * 100, ld_gAUC_test))
         else:
-            print("Testing state: accuracy = {:3.3f} %".format(ld_acc_test * 100))
+            print("Testing state: accuracy = {:3.3f} %".format(ld_acc_test *
+                                                               100))
 
     print("time/loss/accuracy (if enabled):")
 
     if args.mlperf_logging:
         # LR is logged twice for now because of a compliance checker bug
-        mlperf_logger.log_event(
-            key=mlperf_logger.constants.OPT_BASE_LR, value=args.learning_rate
-        )
+        mlperf_logger.log_event(key=mlperf_logger.constants.OPT_BASE_LR,
+                                value=args.learning_rate)
         mlperf_logger.log_event(
             key=mlperf_logger.constants.OPT_LR_WARMUP_STEPS,
             value=args.lr_num_warmup_steps,
         )
 
         # use logging keys from the official HP table and not from the logging library
-        mlperf_logger.log_event(
-            key="sgd_opt_base_learning_rate", value=args.learning_rate
-        )
-        mlperf_logger.log_event(
-            key="lr_decay_start_steps", value=args.lr_decay_start_step
-        )
-        mlperf_logger.log_event(
-            key="sgd_opt_learning_rate_decay_steps", value=args.lr_num_decay_steps
-        )
-        mlperf_logger.log_event(key="sgd_opt_learning_rate_decay_poly_power", value=2)
+        mlperf_logger.log_event(key="sgd_opt_base_learning_rate",
+                                value=args.learning_rate)
+        mlperf_logger.log_event(key="lr_decay_start_steps",
+                                value=args.lr_decay_start_step)
+        mlperf_logger.log_event(key="sgd_opt_learning_rate_decay_steps",
+                                value=args.lr_num_decay_steps)
+        mlperf_logger.log_event(key="sgd_opt_learning_rate_decay_poly_power",
+                                value=2)
 
     tb_file = "./" + args.tensor_board_filename
     writer = SummaryWriter(tb_file)
@@ -2114,16 +2133,20 @@ def run():
             pass
 
     ext_dist.barrier()
-    with torch.autograd.profiler.profile(
-        args.enable_profiling, use_cuda=use_gpu, record_shapes=True
-    ) as prof:
+    with torch.autograd.profiler.profile(args.enable_profiling,
+                                         use_cuda=use_gpu,
+                                         record_shapes=True) as prof:
 
         if not args.inference_only:
 
-            bmlogger = get_bmlogger() # default to Nop logger
+            bmlogger = get_bmlogger()  # default to Nop logger
             if args.fb5logger is not None:
                 bmlogger = get_bmlogger(args.fb5logger)
-                bmlogger.header("DLRM", "OOTB", "train", args.fb5config, score_metric=loggerconstants.EXPS)
+                bmlogger.header("DLRM",
+                                "OOTB",
+                                "train",
+                                args.fb5config,
+                                score_metric=loggerconstants.EXPS)
 
             k = 0
             while k < args.nepochs:
@@ -2153,7 +2176,8 @@ def run():
 
                 for j, inputBatch in enumerate(train_ld):
                     if j == 0 and args.save_onnx:
-                        X_onnx, lS_o_onnx, lS_i_onnx, _, _, _ = unpack_batch(inputBatch)
+                        X_onnx, lS_o_onnx, lS_i_onnx, _, _, _ = unpack_batch(
+                            inputBatch)
 
                     if j < skip_upto_batch:
                         continue
@@ -2178,14 +2202,14 @@ def run():
                         break
 
                     # Skip the batch if batch size not multiple of total ranks
-                    if ext_dist.my_size > 1 and X.size(0) % ext_dist.my_size != 0:
-                        print(
-                            "Warning: Skiping the batch %d with size %d"
-                            % (j, X.size(0))
-                        )
+                    if ext_dist.my_size > 1 and X.size(
+                            0) % ext_dist.my_size != 0:
+                        print("Warning: Skiping the batch %d with size %d" %
+                              (j, X.size(0)))
                         continue
 
-                    mbs = T.shape[0]  # = args.mini_batch_size except maybe for last
+                    mbs = T.shape[
+                        0]  # = args.mini_batch_size except maybe for last
 
                     # forward pass
                     Z = dlrm_wrap(
@@ -2226,7 +2250,8 @@ def run():
                             # self.parallel_model_is_not_prepared is set back to True
                             # when self.parallel_model_batch_size != batch_size.
                             # Search "self.parallel_model_batch_size != batch_size" in code.
-                            if "lazy_params" in optimizer.param_groups[-1].keys():
+                            if "lazy_params" in optimizer.param_groups[
+                                    -1].keys():
                                 optimizer.param_groups.pop()
 
                             # dlrm.v_W_l_l is a list of nn.ParameterLists, one ParameterList per gpu.
@@ -2235,20 +2260,16 @@ def run():
                             lazy_params = nn.ParameterList()
                             if dlrm.weighted_pooling == "learned":
                                 lazy_params.extend(
-                                    nn.ParameterList(
-                                        [p for p_l in dlrm.v_W_l_l for p in p_l]
-                                    )
-                                )
+                                    nn.ParameterList([
+                                        p for p_l in dlrm.v_W_l_l for p in p_l
+                                    ]))
                             if dlrm.use_fbgemm_gpu:
                                 lazy_params.extend(
-                                    nn.ParameterList(
-                                        [
-                                            emb
-                                            for emb_ in dlrm.fbgemm_emb_l
-                                            for emb in emb_.fbgemm_gpu_emb_bag.parameters()
-                                        ]
-                                    )
-                                )
+                                    nn.ParameterList([
+                                        emb for emb_ in dlrm.fbgemm_emb_l
+                                        for emb in
+                                        emb_.fbgemm_gpu_emb_bag.parameters()
+                                    ]))
                             lazy_params_dict = optimizer.param_groups[0]
                             lazy_params_dict["lazy_params"] = True
                             lazy_params_dict["params"] = lazy_params
@@ -2259,19 +2280,17 @@ def run():
 
                         # scaled error gradient propagation
                         # (where we do not accumulate gradients across mini-batches)
-                        if (
-                            args.mlperf_logging
-                            and (j + 1) % args.mlperf_grad_accum_iter == 0
-                        ) or not args.mlperf_logging:
+                        if (args.mlperf_logging and
+                            (j + 1) % args.mlperf_grad_accum_iter == 0
+                            ) or not args.mlperf_logging:
                             optimizer.zero_grad()
                         # backward pass
                         E.backward()
 
                         # optimizer
-                        if (
-                            args.mlperf_logging
-                            and (j + 1) % args.mlperf_grad_accum_iter == 0
-                        ) or not args.mlperf_logging:
+                        if (args.mlperf_logging and
+                            (j + 1) % args.mlperf_grad_accum_iter == 0
+                            ) or not args.mlperf_logging:
                             optimizer.step()
                             lr_scheduler.step()
 
@@ -2285,14 +2304,13 @@ def run():
                     total_iter += 1
                     total_samp += mbs
 
-                    should_print = ((j + 1) % args.print_freq == 0) or (
-                        j + 1 == nbatches
-                    )
+                    should_print = (
+                        (j + 1) % args.print_freq == 0) or (j + 1 == nbatches)
                     should_test = (
                         (args.test_freq > 0)
                         and (args.data_generation in ["dataset", "random"])
-                        and (((j + 1) % args.test_freq == 0) or (j + 1 == nbatches))
-                    )
+                        and (((j + 1) % args.test_freq == 0) or
+                             (j + 1 == nbatches)))
 
                     # print time, loss and accuracy
                     if should_print or should_test:
@@ -2302,33 +2320,30 @@ def run():
                         train_loss = total_loss / total_samp
                         total_loss = 0
 
-                        str_run_type = (
-                            "inference" if args.inference_only else "training"
-                        )
+                        str_run_type = ("inference"
+                                        if args.inference_only else "training")
 
                         wall_time = ""
                         if args.print_wall_time:
                             wall_time = " ({})".format(time.strftime("%H:%M"))
 
                         print(
-                            "Finished {} it {}/{} of epoch {}, {:.2f} ms/it,".format(
-                                str_run_type, j + 1, nbatches, k, gT
-                            )
-                            + " loss {:.6f}".format(train_loss)
-                            + wall_time,
+                            "Finished {} it {}/{} of epoch {}, {:.2f} ms/it,".
+                            format(str_run_type, j + 1, nbatches, k, gT) +
+                            " loss {:.6f}".format(train_loss) + wall_time,
                             flush=True,
                         )
 
                         if args.print_accumulated_time and ext_dist.my_rank < 2:
                             current_unix_time = time_wrap(use_gpu)
                             ext_dist.orig_print(
-                                "Accumulated time so far: {} for process {} for step {} at {}".format(
+                                "Accumulated time so far: {} for process {} for step {} at {}"
+                                .format(
                                     current_unix_time - accum_time_begin,
                                     ext_dist.my_rank,
                                     j + 1,
                                     current_unix_time,
-                                )
-                            )
+                                ))
 
                         log_iter = nbatches * k + j + 1
                         writer.add_scalar("Train/Loss", train_loss, log_iter)
@@ -2344,16 +2359,16 @@ def run():
                             mlperf_logger.log_start(
                                 key=mlperf_logger.constants.EVAL_START,
                                 metadata={
-                                    mlperf_logger.constants.EPOCH_NUM: epoch_num_float
+                                    mlperf_logger.constants.EPOCH_NUM:
+                                    epoch_num_float
                                 },
                             )
 
                         # don't measure training iter time in a test iteration
                         if args.mlperf_logging:
                             previous_iteration_time = None
-                        print(
-                            "Testing at - {}/{} of epoch {},".format(j + 1, nbatches, k)
-                        )
+                        print("Testing at - {}/{} of epoch {},".format(
+                            j + 1, nbatches, k))
                         model_metrics_dict, is_best = inference(
                             args,
                             dlrm,
@@ -2365,18 +2380,14 @@ def run():
                             log_iter,
                         )
 
-                        if (
-                            is_best
-                            and not (args.save_model == "")
-                            and not args.inference_only
-                        ):
+                        if (is_best and not (args.save_model == "")
+                                and not args.inference_only):
                             model_metrics_dict["epoch"] = k
                             model_metrics_dict["iter"] = j + 1
                             model_metrics_dict["train_loss"] = train_loss
                             model_metrics_dict["total_loss"] = total_loss
                             model_metrics_dict[
-                                "opt_state_dict"
-                            ] = optimizer.state_dict()
+                                "opt_state_dict"] = optimizer.state_dict()
                             print("Saving model to {}".format(args.save_model))
                             torch.save(model_metrics_dict, args.save_model)
 
@@ -2385,7 +2396,8 @@ def run():
                             mlperf_logger.log_end(
                                 key=mlperf_logger.constants.EVAL_STOP,
                                 metadata={
-                                    mlperf_logger.constants.EPOCH_NUM: epoch_num_float
+                                    mlperf_logger.constants.EPOCH_NUM:
+                                    epoch_num_float
                                 },
                             )
 
@@ -2393,39 +2405,33 @@ def run():
                         # print("Total test time for this group: {}" \
                         # .format(time_wrap(use_gpu) - accum_test_time_begin))
 
-                        if (
-                            args.mlperf_logging
-                            and (args.mlperf_acc_threshold > 0)
-                            and (best_acc_test > args.mlperf_acc_threshold)
-                        ):
-                            print(
-                                "MLPerf testing accuracy threshold "
-                                + str(args.mlperf_acc_threshold)
-                                + " reached, stop training"
-                            )
+                        if (args.mlperf_logging
+                                and (args.mlperf_acc_threshold > 0) and
+                            (best_acc_test > args.mlperf_acc_threshold)):
+                            print("MLPerf testing accuracy threshold " +
+                                  str(args.mlperf_acc_threshold) +
+                                  " reached, stop training")
                             break
 
-                        if (
-                            args.mlperf_logging
-                            and (args.mlperf_auc_threshold > 0)
-                            and (best_auc_test > args.mlperf_auc_threshold)
-                        ):
-                            print(
-                                "MLPerf testing auc threshold "
-                                + str(args.mlperf_auc_threshold)
-                                + " reached, stop training"
-                            )
+                        if (args.mlperf_logging
+                                and (args.mlperf_auc_threshold > 0) and
+                            (best_auc_test > args.mlperf_auc_threshold)):
+                            print("MLPerf testing auc threshold " +
+                                  str(args.mlperf_auc_threshold) +
+                                  " reached, stop training")
                             if args.mlperf_logging:
                                 mlperf_logger.barrier()
                                 mlperf_logger.log_end(
                                     key=mlperf_logger.constants.RUN_STOP,
                                     metadata={
-                                        mlperf_logger.constants.STATUS: mlperf_logger.constants.SUCCESS
+                                        mlperf_logger.constants.STATUS:
+                                        mlperf_logger.constants.SUCCESS
                                     },
                                 )
                             break
                 if k == 0:
-                    bmlogger.run_stop(nbatches - args.warmup_steps, args.mini_batch_size)
+                    bmlogger.run_stop(nbatches - args.warmup_steps,
+                                      args.mini_batch_size)
 
                 if args.mlperf_logging:
                     mlperf_logger.barrier()
@@ -2436,7 +2442,9 @@ def run():
                     mlperf_logger.barrier()
                     mlperf_logger.log_end(
                         key=mlperf_logger.constants.BLOCK_STOP,
-                        metadata={mlperf_logger.constants.FIRST_EPOCH_NUM: (k + 1)},
+                        metadata={
+                            mlperf_logger.constants.FIRST_EPOCH_NUM: (k + 1)
+                        },
                     )
                 k += 1  # nepochs
             if args.mlperf_logging and best_auc_test <= args.mlperf_auc_threshold:
@@ -2444,7 +2452,8 @@ def run():
                 mlperf_logger.log_end(
                     key=mlperf_logger.constants.RUN_STOP,
                     metadata={
-                        mlperf_logger.constants.STATUS: mlperf_logger.constants.ABORTED
+                        mlperf_logger.constants.STATUS:
+                        mlperf_logger.constants.ABORTED
                     },
                 )
         else:
@@ -2462,24 +2471,24 @@ def run():
     # profiling
     if args.enable_profiling:
         time_stamp = str(datetime.datetime.now()).replace(" ", "_")
-        with open("dlrm_s_pytorch" + time_stamp + "_shape.prof", "w") as prof_f:
+        with open("dlrm_s_pytorch" + time_stamp + "_shape.prof",
+                  "w") as prof_f:
             prof_f.write(
                 prof.key_averages(group_by_input_shape=True).table(
-                    sort_by="self_cpu_time_total"
-                )
-            )
-        with open("dlrm_s_pytorch" + time_stamp + "_total.prof", "w") as prof_f:
-            prof_f.write(prof.key_averages().table(sort_by="self_cpu_time_total"))
+                    sort_by="self_cpu_time_total"))
+        with open("dlrm_s_pytorch" + time_stamp + "_total.prof",
+                  "w") as prof_f:
+            prof_f.write(
+                prof.key_averages().table(sort_by="self_cpu_time_total"))
         prof.export_chrome_trace("dlrm_s_pytorch" + time_stamp + ".json")
         # print(prof.key_averages().table(sort_by="cpu_time_total"))
 
     # plot compute graph
     if args.plot_compute_graph:
         sys.exit(
-            "ERROR: Please install pytorchviz package in order to use the"
-            + " visualization. Then, uncomment its import above as well as"
-            + " three lines below and run the code again."
-        )
+            "ERROR: Please install pytorchviz package in order to use the" +
+            " visualization. Then, uncomment its import above as well as" +
+            " three lines below and run the code again.")
         # V = Z.mean() if args.inference_only else E
         # dot = make_dot(V, params=dict(dlrm.named_parameters()))
         # dot.render('dlrm_s_pytorch_graph') # write .pdf file
@@ -2515,36 +2524,41 @@ def run():
                 print("ii.shape", ii.shape)
 
         # name inputs and outputs
-        o_inputs = (
-            ["offsets"]
-            if torch.is_tensor(lS_o_onnx)
-            else ["offsets_" + str(i) for i in range(len(lS_o_onnx))]
-        )
-        i_inputs = (
-            ["indices"]
-            if torch.is_tensor(lS_i_onnx)
-            else ["indices_" + str(i) for i in range(len(lS_i_onnx))]
-        )
+        o_inputs = (["offsets"] if torch.is_tensor(lS_o_onnx) else
+                    ["offsets_" + str(i) for i in range(len(lS_o_onnx))])
+        i_inputs = (["indices"] if torch.is_tensor(lS_i_onnx) else
+                    ["indices_" + str(i) for i in range(len(lS_i_onnx))])
         all_inputs = ["dense_x"] + o_inputs + i_inputs
         # debug prints
         print("inputs", all_inputs)
 
         # create dynamic_axis dictionaries
-        do_inputs = (
-            [{"offsets": {1: "batch_size"}}]
-            if torch.is_tensor(lS_o_onnx)
-            else [
-                {"offsets_" + str(i): {0: "batch_size"}} for i in range(len(lS_o_onnx))
-            ]
-        )
-        di_inputs = (
-            [{"indices": {1: "batch_size"}}]
-            if torch.is_tensor(lS_i_onnx)
-            else [
-                {"indices_" + str(i): {0: "batch_size"}} for i in range(len(lS_i_onnx))
-            ]
-        )
-        dynamic_axes = {"dense_x": {0: "batch_size"}, "pred": {0: "batch_size"}}
+        do_inputs = ([{
+            "offsets": {
+                1: "batch_size"
+            }
+        }] if torch.is_tensor(lS_o_onnx) else [{
+            "offsets_" + str(i): {
+                0: "batch_size"
+            }
+        } for i in range(len(lS_o_onnx))])
+        di_inputs = ([{
+            "indices": {
+                1: "batch_size"
+            }
+        }] if torch.is_tensor(lS_i_onnx) else [{
+            "indices_" + str(i): {
+                0: "batch_size"
+            }
+        } for i in range(len(lS_i_onnx))])
+        dynamic_axes = {
+            "dense_x": {
+                0: "batch_size"
+            },
+            "pred": {
+                0: "batch_size"
+            }
+        }
         for do in do_inputs:
             dynamic_axes.update(do)
         for di in di_inputs:

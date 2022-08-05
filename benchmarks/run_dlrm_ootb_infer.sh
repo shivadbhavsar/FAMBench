@@ -48,10 +48,10 @@ echo
 echo "Running Command:"
 
 if [ "$is_config" = true ]; then
-  config_flags=$(head -n 1 "${config}")
-  (set -x; python "${benchmark}/${implementation}/dlrm_s_pytorch.py" --inference-only ${config_flags} --fb5logger=${LOGGER_FILE} --fb5config=${config} 2>&1)
+  config_flags=$(head -n 1 configs/"${config}")
+  (set -x; python3 "${benchmark}/${implementation}/dlrm_s_pytorch.py" --inference-only ${config_flags} --fb5logger=${LOGGER_FILE} --fb5config=configs/${config} 2>&1)
 else
-  (set -x; python "${benchmark}/${implementation}/dlrm_s_pytorch.py" --inference-only --mini-batch-size=64 --test-mini-batch-size=64 --test-num-workers=0 --data-generation=random --arch-mlp-bot=512-512-64 --arch-mlp-top=1024-1024-1024-1 --arch-sparse-feature-size=64 --arch-embedding-size=1000000-1000000-1000000-1000000-1000000-1000000-1000000-1000000 --num-indices-per-lookup=100 --numpy-rand-seed=727 --num-batches=200 --print-freq=20 --print-time --fb5logger=${LOGGER_FILE} --fb5config=${config} 2>&1)
+  (set -x; python3 "${benchmark}/${implementation}/dlrm_s_pytorch.py" --inference-only --mini-batch-size=64 --test-mini-batch-size=64 --test-num-workers=0 --data-generation=random --arch-mlp-bot=512-512-64 --arch-mlp-top=1024-1024-1024-1 --arch-sparse-feature-size=64 --arch-embedding-size=1000000-1000000-1000000-1000000-1000000-1000000-1000000-1000000 --num-indices-per-lookup=100 --numpy-rand-seed=727 --num-batches=200 --print-freq=20 --print-time --fb5logger=${LOGGER_FILE} --fb5config=${config} 2>&1)
 fi
 
 echo "=== Completed Run ==="
