@@ -1950,17 +1950,15 @@ def run():
             top_l_sample_input = torch.ones([args.mini_batch_size, ln_top[0]],
                                             dtype=torch.float32).cuda()
             additional_args = {}
+            additional_args['verbose_log'] = True
             if args.quantize_mlp_with_bit == 16:
-                additional_args['fp16_mode'] = True
+                additional_args[
+                    'lower_precision'] = torch_migraphx.fx.utils.LowerPrecision.FP16
 
-            dlrm.bot_l = torch_migraphx.fx.lower_to_mgx(dlrm.bot_l,
-                                                        [bot_l_sample_input],
-                                                        allow_split=False,
-                                                        **additional_args)
-            dlrm.top_l = torch_migraphx.fx.lower_to_mgx(dlrm.top_l,
-                                                        [top_l_sample_input],
-                                                        allow_split=False,
-                                                        **additional_args)
+            dlrm.bot_l = torch_migraphx.fx.lower_to_mgx(
+                dlrm.bot_l, [bot_l_sample_input], **additional_args)
+            dlrm.top_l = torch_migraphx.fx.lower_to_mgx(
+                dlrm.top_l, [top_l_sample_input], **additional_args)
 
         elif torch_migraphx is None:
             sys.exit("\ntorch2mgx module failed to import.\n\n" +
